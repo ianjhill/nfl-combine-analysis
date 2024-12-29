@@ -1,0 +1,554 @@
+---
+title: "Analysis of NFL Combine Metrics ('04-'23)"
+author: "Ian Hill"
+date: 16 December 2024
+date-format: long
+number-sections: true
+bibliography: references.bib
+format:
+  pdf:
+    fig-pos: "H"
+    cite-method: biblatex
+    geometry: margin=1in
+jupyter: python3
+---
+# Introduction
+The NFL Scouting Combine is a pivotal event in the evaluation of prospective
+players, allowing teams to assess physical and athletic capabilities before the draft.
+This project examines the relationship between combine performance metrics and draft outcomes, seeking to identify patterns that could
+guide future scouting and drafting strategies and predict player performance in the NFL @kuzmits2008nfl. By analyzing historical data, this study
+aims to answer three key research questions:
+
+1.  How do combine event performances correlate with draft round?
+2.  What is the relationship between players who were drafted and their combine performance?
+3.  Can positions be predicted based on combine performance, and, which positions excel in specific events?
+
+The dataset used in this study contains NFL Scouting Combine results from 2004-2023.
+It was collected publicly from Sports Reference StatHead Football @Hauk_Shuckers_Lock_2023.
+It's records represent individual players and Relevant variables include round drafted ('Round') with rounds 1-7 indicated accordingly and
+undrafted players being represented by (8), position ('position'): QB, and performance metrics from the combine such as
+40-yard dash ('forty'): 4.79, vertical jump ('vertical'): 30.5, bench press repetitions ('bench_reps'): 21.0,
+broad jump ('broad_jump'): 110.0, three-cone drill ('three_cone'): 7.66 and shuttle drill ('shuttle'): 4.41. NaN values in combine events were removed according to model needs.
+
+```{python}
+#| echo: false
+# Imports
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.metrics import classification_report, accuracy_score, roc_curve, auc
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.model_selection import RandomizedSearchCV
+from scipy.stats import randint
+from sklearn.preprocessing import LabelEncoder
+import requests
+# Prevents warnings modeling outputs
+import warnings
+warnings.filterwarnings("ignore")
+```
+```{python}
+#| echo: false
+# URL of the CSV file
+url = 'https://data.scorenetwork.org/data/nfl_combine.csv'
+
+# Path to save the file locally
+local_file_path = "data/nfl-combine.csv"  # Ensure the 'data' folder exists or adjust the path
+
+# Send a GET request to the URL
+response = requests.get(url)
+
+# Check if the request was successful
+if response.status_code == 200:
+    # Save the content to a local file
+    with open(local_file_path, "wb") as file:
+        file.write(response.content)
+    # print(f"CSV file downloaded and saved as {local_file_path}")
+else:
+    print(f"Failed to download file. Status code: {response.status_code}")
+
+original_df = pd.read_csv('data/nfl-combine.csv')
+# Clean the Data
+'''
+We want to keep Round = NaN because this signifies Undrafted players
+We can change NaN to 8 to indicate Undrafted
+'''
+# Fill NA values with 0
+original_df['Round'] = original_df['Round'].fillna(int(8))
+# Convert the column to integer type to remove decimals
+original_df['Round'] = original_df['Round'].astype(int)
+'''
+This allows us to analyze the combine performance numbers through
+for loops while skipping over records which have Nan.
+Some players performed in some
+'''
+numeric_columns = ['forty', 'vertical', 'bench_reps',
+                    'broad_jump', 'three_cone', 'shuttle']
+```
+
+The analysis focuses on exploring the predictive values of these variables. Metrics like the 40-yard dash and vertical jump are hypothesized to be strong indicators for speed and explosiveness, particularly for skill positions such as wide receivers and runningbacks @hedlund2018performance. 
+Conversely, the bench press and shuttle drill are expected to be more relevant for strength and agility in positions like offensive lineman @hedlund2018performance.
+
+Through data visualization, statistical analysis, and machine learning techniques, this project aims to provide actionable insights into the scouting process. 
+By understanding how combine metrics relate to draft outcomes and player positions, teams can optimize their draft strategies to build stronger, more competitive rosters.
+
+# Methods
+This study utilized NFL Scouting Combine data from 2004 to 2023 to examine the relationship between player performance metrics and draft outcomes. The dataset was cleaned to address missing values: undrafted players were assigned a draft round value of 8, while missing combine performance values were retained until necessary for specific analyses.
+
+To explore relationships between variables, visualizations such as scatterplots, correlation matrices, histograms, and violin plots were created using ‘seaborn’ and ‘matplotlib’. These visualizations provided insights into trends like differences in combine performance by position and draft outcomes. Machine learning models from ‘scikit-learn’ were applied to predict outcomes, including:
+Random Forest Classifier and Decision Tree Classifier for predictive modeling and feature importance analysis.
+Randomized Search CV for hyperparameter optimization. Hist Gradient Boosting Classifier for efficient modeling with large datasets.
+
+Model evaluation used metrics such as accuracy, precision, recall, and ROC curves. Prediction tests validated observed differences between drafted and undrafted players across combine metrics. These analyses provided actionable insights into the predictive power of combine metrics, supporting NFL teams in refining their scouting and draft strategies.
+
+# Results
+
+## Combine Performance Related to Round Drafted
+```{python}
+#| echo: false
+#| label: fig-scatter-comb-round
+#| fig-cap: "Relationship of Round Drafted and Resulting Combine Performance"
+
+# DO COMBINE PERFORMANCES CORRELATE WITH DRAFT ROUND
+scatter_df = original_df.copy()
+scatter_df = scatter_df.dropna(subset=["position"])
+# Set up the subplot grid (2 rows and 3 columns for 6 plots)
+scatter_fig, axes = plt.subplots(2, 3, figsize=(12, 10))
+# Flatten the axes array for easier iteration
+axes = axes.flatten()
+
+for i, col in enumerate(numeric_columns):
+    scatter_df_filtered = scatter_df.dropna(subset=[col])
+    # sns.boxplot(data=df_filtered, x='Round', y=col, palette='Set2')
+    axes[i].scatter(scatter_df_filtered['Round'], scatter_df_filtered[col].dropna(),
+                    label=col.capitalize())
+    # Fit a linear regression (trendline)
+    # np.polyfit fits a polynomial of degree 1 to the data
+    slope, intercept = np.polyfit(scatter_df_filtered['Round'],
+                                  scatter_df_filtered[col], 1)
+
+    # Create the trendline using the slope and intercept
+    trendline = slope * scatter_df_filtered['Round'] + intercept
+
+    # Create the formula string for the legend
+    formula = f'Trendline: y = {slope:.2f}x + {intercept:.2f}'
+
+    # Modify x-tick labels: change '8' to 'Undrafted'
+    scatter_tick_labels = [str(round_value) if round_value != 8 else "Undrafted"
+                    for round_value in scatter_df_filtered['Round'].unique()]
+    axes[i].set_xticks(scatter_df_filtered['Round'].unique())
+    axes[i].set_xticklabels(scatter_tick_labels)  # Set the modified tick labels
+
+    # Plot the trendline
+    axes[i].plot(scatter_df_filtered['Round'], trendline, color='red',
+                  label='Trendline')
+
+    axes[i].set_title(f'Round vs {col.capitalize()}')
+    axes[i].set_xlabel('Round')
+    axes[i].set_ylabel(f'{col.capitalize()} Performance')
+    axes[i].legend([col, formula])
+
+# Adjust layout to prevent overlap
+plt.tight_layout()
+
+plt.show()
+```
+
+When it comes to the combine, the results of a player's performance can ultimately cause a change in the round they are drafted in. Because of this, it was important to explore the change of combine performance over draft rounds.
+
+In @fig-scatter-comb-round, six scatterplots were created to examine the relationship between each combine event and the performance by round drafted. As is expected faster and stronger players tend to get drafted in earlier rounds while weaker and slower players tend to fall and ultimately can become undrafted. 
+
+At first glance, the trends between each graph can be confusing if not familiar with each combine events scoring design. The 'forty', 'three_cone' and 'shuttle' drills all measure on a timed assessment. Therefore, a "higher" time results in a slower player. As we can see in graphs 1, 5 and 6, the correlation between round drafted and time in these events is positively correlated. As time increases, so does a player's potential draft round. The trendline formulas show this relationship with positive slopes:
+
+* 'forty' | y = 0.02x + 4.68
+* 'three_cone' | y = 0.01x + 7.19
+* 'shuttle' | y = 0.01x + 4.35
+
+The opposite occurs for 'vertical', 'bench_reps' and 'broad_jump'. These events are scored off of purely physical measurements. For example, the height of a player's vertical jump or the amount of reps a player can perform on the bench press. In this case, a larger score results in a more athletic or stronger individual. It can be seen in plots, 2, 3 and 4 that the correlation between round drafted and physical event score is negatively correlated. As score decreases, round drafted increases. The trendline formulas show this relationship with negative slopes:
+
+* 'vertical' | y = -0.27x + 34.27
+* 'bench_reps' | y = -0.40x + 22.82
+* 'broad_jump' | y = -0.61x + 118.23
+
+```{python}
+#| echo: false
+#| label: fig-corr-comb-round
+#| fig-cap: "Correlation Matrix Observing Round Drafted and Combine Performance"
+# Create df copy
+corr_df = original_df.copy()
+corr_df = corr_df.sort_values('Round')
+# Drop position column
+corr_df_filtered = corr_df.drop(columns=["position"])
+
+# Calculate the correlation matrix
+correlation_matrix = corr_df_filtered.corr()
+
+# Display the correlation matrix
+# print(correlation_matrix)
+
+# Visualize the correlation matrix using a heatmap
+plt.figure(figsize=(6, 2))
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm',
+            fmt='.2f', linewidths=0.5)
+plt.title('Correlation of Draft Round & Combine Event')
+plt.show()
+```
+
+In @fig-corr-comb-round, the top row is to be observed to see correlation between Round and combine events. Red is seen as positively correlated, while blue is seen as negatively correlated indicated by the legend to the right on a 0-1 scale. 
+As can be seen Round vs ('forty', 'three_cone' 'shuttle') are all positive and shaded in a faint red shade to indicate positive correlation. This is just as was seen in the scatterplots seen in @fig-scatter-comb-round. Alternatively, ('vertical', 'bench_reps', 'braod_jump') are shaded in a faint blue and include negative values -0.16, 0.15 and -0.16 respectively, indicating a negative correlation between Round and these events. 
+
+To reiterate, it was seen as a player's timed event score increases so does their potential draft round indicated a positive relationship. In the player's case, this is not to be sought after. Teams value quick and agile players to perform at the highest level against the fastest competition. 
+Meanwhile, it can also be seen that as a player's physical event score increases, there potential draft round decreases indicated a negative relationship. In this case a player should focus on achieving a higher score as it indicates a stronger and morea athletic player which teams look for in the NFL draft. This relationship is utilized by draft scouts to determine where a player may get drafted according to there performance and can be scouted accordingly based on draft capital held by the team.
+
+
+## Predicting Draft Status Based on Combine Performance
+There are 7 available rounds for a player to be drafted in the NFL draft. The chances of being selected are narrow to begin. However, several players go undrafted every year as teams continue evaluating a grabbing potential practice squad players to create a complete organization capable employing squad depth throughout the season 
+
+The distribution of drafted and undrafted players from 2004-2023 was 4023 drafted players and 2105 undrafted players in this dataset. Around one-third of players between 2004-2023 went undrafted. Many of those players will get a chance to perform individually for a team's roster spot, and many will have finally completed their football careers. Teams will often wait for players to fall out of the draft for them to be signed to a contract later on as to not waste a draft pick. Therefore, many teams employ classification techniques as to determine which players are likely to be drafted and thus should be taken early and not be given the chance to fall out of the draft as the chances of them being taken by another organization can increase based on their performance. @murran2018ahead
+
+### Tuned Decision Tree
+First, a simple decision tree model was employed to predict undrafted(0) and drafted(1) based on combine performances from player records in the data. 
+This model provided sub par results due to overfitting on the training data and was not included in this report so a hyperparametized tuned Random Forest Model was utilized to increase performance.
+```{python}
+#| echo: false
+dt_data = original_df.copy()
+dt_data['Round'] = dt_data['Round'].apply(lambda x: 1 if x < 8 else 0)
+# Drop rows with na and position column
+dt_data = dt_data.dropna()
+dt_data = dt_data.drop(columns=["position"])
+
+# Create features
+features = dt_data.loc[:, dt_data.columns != 'Round']
+
+# Create labels
+labels = dt_data['Round']
+# print(data.head())
+# Split 70-30 train-test
+features_train, features_test, labels_train, labels_test = \
+    train_test_split(features, labels, test_size=0.2)
+
+# Create an untrained model
+model_dt = DecisionTreeClassifier()
+
+# Train it on the training set
+model_dt.fit(features_train, labels_train)
+
+# Compute training accuracy
+train_predictions = model_dt.predict(features_train)
+train_acc = accuracy_score(labels_train, train_predictions)
+
+# Compute test accuracy
+test_predictions = model_dt.predict(features_test)
+test_acc = accuracy_score(labels_test, test_predictions)
+```
+
+```{python}
+#| echo: false
+#| label: tbl-tuned-decision-tree-draft
+#| tbl-cap: "Performance of GridSearchCV Tuned Decision Tree Predicting Draft Status Based on Combine Performance"
+'''
+The model was overfitting severely. Now lets try tuning the hyperparameters
+'''
+# Tuning the model using GridSearchCV
+model_dt_tuned = DecisionTreeClassifier(random_state=42)
+
+# Hyperparameters to tune
+param_grid = {
+    'max_depth': [2, 3, 4, 5],
+    'min_samples_split': [2, 5, 10],
+    'min_samples_leaf': [1, 2, 4]
+}
+
+# GridSearchCV for hyperparameter tuning
+grid_search = GridSearchCV(estimator=model_dt_tuned, param_grid=param_grid,
+                            cv=5, scoring='accuracy')
+grid_search.fit(features_train, labels_train)
+
+# Best hyperparameters
+# print(f"Best Hyperparameters: {grid_search.best_params_}")
+
+# Evaluating on the test set with the best model
+best_model = grid_search.best_estimator_
+
+test_accuracy = best_model.score(features_test, labels_test)
+train_accuracy = best_model.score(features_train, labels_train)
+print(f"Train Accuracy with Tuning: {train_accuracy}")
+print(f"Test Accuracy with Tuning: {test_accuracy}")
+```
+
+After hyper tuning the simple decision tree model the performance did increase. Seen in @tbl-tuned-decision-tree-draft, training accuracy fell to ~0.67, while testing accuracy increased to ~0.66. This is much more consisitent of a model than before as testing appears to perform as well as predictions on the training set indicating the model will perform consistently on all data in the dataset and new data.
+
+However, this performance is still poor in terms of target accuracy. Good to great
+models fall within an accuracy of ~0.7-0.8 consistently in the testing set and
+training set. This model may be suffering from lack of data as the dataset is relatively small. 
+```{python}
+#| echo: false
+#| label: fig-roc-dt
+#| fig-cap: "ROC curve for tuned decision tree predictions of draft status"
+# Plot ROC curve
+y_prob = best_model.predict_proba(features_test)[:, 1]
+fpr, tpr, thresholds = roc_curve(labels_test, y_prob)
+
+# Compute the AUC (Area Under the Curve)
+roc_auc = auc(fpr, tpr)
+
+# Plot the ROC curve
+plt.figure(figsize=(6, 4))
+plt.plot(fpr, tpr, color='blue', lw=2,
+          label=f'ROC curve (AUC = {roc_auc:.2f})')
+# Diagonal line (random classifier)
+plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.legend(loc='lower right')
+plt.grid(True)
+plt.show()
+```
+
+The ROC curve produced in @fig-roc-dt by this model did increase from the first generation decision tree model performing at ~0.6-0.7 showing the increase in performance using hyperparameters.
+
+### ROC Curve Calculations
+The ROC curve is a measure of the correct positively predicted cases when testing. These values are calculated at several thresholds of the model and are then plotted to create the ROC curve seen. A curve with points more NW in the graph indicates a stronger performing model while a curve close to x=y or the linear diagonal from (0,0) to (1,1) indicates a model similar to random guessing or a poor performing model. The Area Under the Curve is calculated as the integral of the ROC curve. This value falls on a range of 0-1. With closer to 0 indicated worse than random guessing, close to 0.5 as similar to random guessing and close to 1 as perfect prediction performance on the testing data @hoo2017roc.
+
+### RANDOM FORESTS
+A random forest classifier was deployed to see if the model performance could be increased. Based on the results, in @tbl-rf-tuned-report, the precision of this model predicting drafted players was robust and efficacious. With a recall of 0.94, this model correctly predicted 94% of players to be drafted based on their combine results. However, this model does not perform well on undrafted players. With a recall of 0.19, it only correctly predicted 19% of players to be undrafted. The f1 score for both, which is a harmonic mean between precision and recall also supports this. Predicting drafted players = 0.77, predicting undrafted = 0.29. This could possibly be due to lack of data or potentially lack of combine results for undrafted players making it difficult for the model to base it's undrafted predictions. 
+
+```{python}
+#| echo: false
+rf_df = original_df.copy()
+rf_df['Round'] = rf_df['Round'].apply(lambda x: 1 if x < 8 else 0)
+rf_df = rf_df.drop(columns=["position"])
+# Handle NA values - We'll drop rows with NA in any of the response
+# df = df.dropna(subset=numeric_columns, how='all')
+# Define features (X) and target (y)
+X = rf_df[numeric_columns]  # Features
+y = rf_df['Round']  # Target (1 = Drafted, 0 = Undrafted)
+
+# Split the data into train and test sets (80/20 split)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+# Train a Random Forest model
+rf_model_draft = RandomForestClassifier(random_state=42)
+rf_model_draft.fit(X_train, y_train)
+
+# Predict on the test set
+rf_y_pred = rf_model_draft.predict(X_test)
+
+```
+
+```{python}
+#| echo: false
+# Feature importance
+rf_feature_importance = rf_model_draft.feature_importances_
+features = X.columns
+```
+
+```{python}
+#| echo: false
+#| label: tbl-rf-tuned-report
+#| tbl-cap: "Randomized Search Random Forest Classification Report"
+'''
+Try hyperparamter tuning for improved model performance
+'''
+# Define the hyperparameter distributions
+param_dist = {
+    'n_estimators': randint(100, 1000),  # Randomly number of trees
+    'max_depth': [None, 10, 20, 25],     # Max depth of the tree
+    'min_samples_split': randint(2, 20),  # Minimum split node samples
+    'min_samples_leaf': randint(1, 20),  # Minimum leaf node samples
+    'max_features': ['auto', 'sqrt', 'log2'],  # Number of features
+    'bootstrap': [True, False]  # Whether to use bootstrapping
+}
+
+# Set up RandomizedSearchCV with 5-fold cross-validation
+random_search = RandomizedSearchCV(estimator=rf_model_draft,
+                                    param_distributions=param_dist,
+                                    n_iter=12, cv=10,
+                                    n_jobs=-1, verbose=0,
+                                    random_state=42)
+
+# Fit the model to the data
+best_rf_model = random_search.fit(X_train, y_train)
+
+# Display the best parameters found
+# print(f"Best Hyperparameters: {random_search.best_params_}")
+
+# Use the best model to make predictions
+best_rf_model = random_search.best_estimator_
+y_pred = best_rf_model.predict(X_test)
+
+# Evaluate the model
+print("Randomized Search Random Forest Classification Report:")
+print(classification_report(y_test, y_pred))
+```
+
+```{python}
+#| echo: false
+# Feature importance
+best_rf_feature_importance = best_rf_model.feature_importances_
+features = X.columns
+# print("\nRandomized Search Random Forest Feature Importance:")
+# for feature, importance in zip(features, best_rf_feature_importance):
+#    print(f"{feature}: {importance:.4f}")
+```
+
+It was seen that the 40-yard dash was the most relevant feature for predicting draft status with a relevance score of 0.2875. This makes sense as the most infamous and televised combine event is the 40 yard dash and speed is one of the most important features an NFL player can have. @kuzmits2008nfl The bench press came in second with 0.2100. For larger players this is reasonable as they will excel in the strength portions of the combine. The draft status for offensive and defensive lineman would most
+likely be influenced by this metric.
+
+```{python}
+#| echo: false
+#| label: fig-roc-rf-draft
+#| fig-cap: "ROC curve for Tuned Random Forest model predicting player draft status on combine results"
+# Plot ROC curve
+y_prob = best_rf_model.predict_proba(X_test)[:, 1]
+fpr, tpr, thresholds = roc_curve(y_test, y_prob)
+
+# Compute the AUC (Area Under the Curve)
+roc_auc = auc(fpr, tpr)
+
+# Plot the ROC curve
+plt.figure(figsize=(6, 4))
+plt.plot(fpr, tpr, color='blue', lw=2,
+          label=f'ROC curve (AUC = {roc_auc:.2f})')
+# Diagonal line (random classifier)
+plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.legend(loc='lower right')
+plt.grid(True)
+plt.show()
+```
+
+This model's performance was much better at predicting draft status than the decision tree of @fig-roc-dt. In @fig-roc-rf-draft, the AUC comes out to ~0.7. This average performance shows increase in Random Forest classifying over decision tree classifying. The model could be improved in the future with more robust and complete data.
+
+# Predicting Player Position Based on Combine Performance
+
+The question arises now of how well does each position group do at the combine. It would be expected that smaller players like wide receivers and defensive backs will excel in timed events such 
+as the 40-yard dash and three-cone drills. While larger most physically imposing players like offensive and defensive lineman would predominate in strength events such as the bench press. First, the positional groups were created to simplify model generation. Offensive tackle, guard and center were grouped into offensive lineman. Defensive tackle, end, and edge were grouped into defensive linemen. Cornerbacks and safeties were grouped into defensive back. Outside and inside linebackers were grouped into linebackers.
+```{python}
+#| echo: false
+grouped_df = original_df.copy()
+# Group positions into position groups
+grouped_df['position'] = grouped_df['position'].replace(
+    {'OT': 'OL', 'OG': 'OL', 'C': 'OL'})
+
+grouped_df['position'] = grouped_df['position'].replace(
+    {'DT': 'DL', 'DE': 'DL', 'EDGE': 'DL'})
+
+grouped_df['position'] = grouped_df['position'].replace(
+    {'CB': 'DB', 'S': 'DB'})
+
+grouped_df['position'] = grouped_df['position'].replace(
+    {'OLB': 'LB', 'ILB': 'LB'})
+```
+
+## Plotting Player Performance Based on Playing Position
+```{python}
+#| echo: false
+#| label: fig-viol-grouped
+#| fig-cap: "Distribution of players combine performance at each position"
+viol_grpd_df = grouped_df.copy()
+
+viol_grpd_df = viol_grpd_df.dropna(subset=["Round"])
+# Set up the subplot grid (2 rows and 3 columns for 6 plots)
+fig, axes = plt.subplots(3, 2, figsize=(12, 8))  # Adjust the size
+axes = axes.flatten()  # Flatten to make it easier to iterate over
+
+# Loop through each column and plot the violin plots
+for i, col in enumerate(numeric_columns):
+    sns.violinplot(data=viol_grpd_df, x='position', y=col, hue=None,
+                    palette='Set2', ax=axes[i])
+    axes[i].set_title(f'{col.capitalize()} by Position')
+    axes[i].set_xlabel('Position')
+    axes[i].set_ylabel(f'{col.capitalize()}')
+
+# Step 4: Adjust layout to avoid overlap of titles and labels
+plt.tight_layout()
+plt.show()
+```
+
+In @fig-viol-grouped, the distribution of players combine performance based on playing position can be seen. The results align with the prediction that wide receivers and defensive backs excelled
+in the forty yard dash, three cone and shuttle drill. Again, lower scores indicate faster players. In the vertical and broad jump plot, it can also be seen that all players besides offensive and defensive lineman do well. It appears the extra weight carried by lineman prevent better scores in these categories. In the bench press however, lineman excel in this category. The strength needed to play lineman is one of the most important features of these players draft potential.
+
+## Model, Predicting Positions
+For greater model generation and for its ability to work based incomplete values in data. The HistGradientBoost Classifier was utilized to predict playing position based on combine performance.
+```{python}
+#| echo: false
+#| label: tbl-hg-report
+#| tbl-cap: "Hist Gradient Boost Classification Report for predicting playing position"
+hist_grad_df = grouped_df.copy()
+#| echo: false
+hist_grad_df = hist_grad_df.drop(columns=["Round"])
+hist_grad_df = hist_grad_df[hist_grad_df['position'] != 'FB']
+# Encode 'position' as numeric labels using LabelEncoder
+le = LabelEncoder()
+hist_grad_df['position_encoded'] = le.fit_transform(hist_grad_df['position'])
+
+# Define features (X) and target (y)
+X = hist_grad_df[['forty', 'vertical', 'bench_reps',
+        'broad_jump', 'three_cone', 'shuttle']]
+y = hist_grad_df['position_encoded']  # Use the encoded position for prediction
+
+# Split the data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2,
+                                                    random_state=42)
+
+# Initialize and train the HistGradientBoosting model
+hg_model = HistGradientBoostingClassifier(max_iter=100, random_state=42)
+hg_model.fit(X_train, y_train)
+
+# Make predictions
+y_pred = hg_model.predict(X_test)
+
+# Evaluate the model
+print("Classification Report:")
+print(classification_report(y_test, y_pred, target_names=le.classes_))
+# Test accuracy
+accuracy = hg_model.score(X_test, y_test)
+# print(f"Test Accuracy: {accuracy:.4f}")
+```
+
+In @tbl-hg-report, the precision and recall metrics for each position was poor however, when predicting offensive lineman, this model performed very well, correctly predicting the position of offensive lineman 81% of the time. This was most likely due to the drastic difference in bench press scores than other positions seen in @fig-viol-grouped. Every other combine event had much overlap for each position most likely preventing the model from distinguishing the player's position. More variables would need to be introduced to increase this performance to distinguish other positions from each other.
+
+Below is the ROC curve for this model:
+```{python}
+#| echo: false
+# Plot ROC Curve for each class
+fpr, tpr, roc_auc = {}, {}, {}
+for i in range(len(le.classes_)):
+    fpr[i], tpr[i], _ = roc_curve(y_test, hg_model.predict_proba(X_test)
+                                  [:, i], pos_label=i)
+    roc_auc[i] = auc(fpr[i], tpr[i])
+
+# Plot all ROC curves
+plt.figure(figsize=(6, 4))
+for i in range(len(le.classes_)):
+    plt.plot(fpr[i], tpr[i], lw=2,
+              label=f'{le.classes_[i]} (AUC = {roc_auc[i]:.2f})')
+
+# Plot random classifier line
+plt.plot([0, 1], [0, 1], color='gray', linestyle='--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curve')
+plt.legend(loc='lower right')
+plt.grid(True)
+plt.show()
+```
+
+The ROC curve shows the exceptional performance for predicting player position. The Hist Gradient Boost Classifier performed well when positively predicting a player's position. Notably it predicted quartbacks (0.93) almost as well as it did with offensive lineman (0.96). This will be something to keep in mind for future research and modeling because of the quarterback's premier position. Teams could use this model to evaluate QB metrics and determine whether or not they performed well at the combine. 
+
+# Discussion
+The analysis of NFL Scouting Combine data revealed distinct relationships between combine events and draft outcomes. Timed drills such as the 40-yard dash, shuttle drill, and three-cone drill were positively correlated with an increased draft round, indicating that slower times in these events were associated with later draft selections or going undrafted. Conversely, power and explosiveness metrics such as bench press repetitions, vertical jump, and broad jump showed negative correlations with increased draft round, suggesting that stronger performances in these events were linked to earlier draft rounds.
+
+In modeling draft status, the Random Forest Classifier with optimized hyperparameters outperformed simpler models like Decision Trees, showcasing its ability to handle complex interactions between variables and improve predictive accuracy. However, the overlap of player positions in combine metrics posed challenges in distinguishing between groups. Despite this, specific patterns emerged: wide receivers and defensive backs excelled in timed drills as well as leaping drills, while linemen and larger players dominated strength-based events such as the bench press.
+
+When predicting player position based on combine performance, the HistGradientBoost Classifier performed exceptionally well. It was able to effectively predict offensive lineman and quarterbacks specifically well. This classifier excelled even when data was missing by identifying splits during the training process which in turn modify and create the best performing model @mayr2014evolution.
+
+The NFL draft occurs in April. It may be interesting to deploy these models onto each player's combine performance to perhaps understand there draft potential as well as what positions they may be most fit to play. Data from the 2024 draft as well as the 2025 can be obtained and used to refine the models used in this study to continue to improve this report's validity.
+
+In conclusion, this study highlights the importance of combine performance metrics in evaluating draft prospects and player positions. By leveraging machine learning techniques, NFL teams can gain deeper insights into player potential and upgrade their scouting strategies, enhancing draft decision-making and roster building.
